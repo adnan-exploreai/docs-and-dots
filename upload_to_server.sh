@@ -16,6 +16,9 @@ set -euo pipefail
 #   <public key>          -> /root/.ssh/id_ed25519.pub
 #   setup_debian.sh       -> /root/setup_debian.sh
 #   install_neovim.sh     -> /root/install_neovim.sh   (if present)
+#   install_tmux.sh       -> /root/install_tmux.sh     (if present)
+#   install_pi.sh         -> /root/install_pi.sh       (if present)
+#   tmux.conf             -> /root/tmux.conf           (if present)
 #
 # You will be prompted for the server's root password.
 
@@ -90,6 +93,31 @@ if [ -f "$NEOVIM_SCRIPT" ]; then
   log "install_neovim.sh uploaded."
 else
   warn "install_neovim.sh not found next to this script - skipping."
+fi
+
+# --- upload install_pi.sh (optional) -------------------------------------------
+PI_SCRIPT="$SCRIPT_DIR/install_pi.sh"
+if [ -f "$PI_SCRIPT" ]; then
+  step "Uploading install_pi.sh to $HOST:/root/"
+  scp "$@" "$PI_SCRIPT" "$HOST:/root/install_pi.sh" \
+    || die "Failed to upload install_pi.sh."
+  log "install_pi.sh uploaded."
+else
+  warn "install_pi.sh not found next to this script - skipping."
+fi
+
+# --- upload install_tmux.sh + tmux.conf (optional) ----------------------------
+TMUX_SCRIPT="$SCRIPT_DIR/install_tmux.sh"
+TMUX_CONF="$SCRIPT_DIR/tmux.conf"
+if [ -f "$TMUX_SCRIPT" ] && [ -f "$TMUX_CONF" ]; then
+  step "Uploading install_tmux.sh + tmux.conf to $HOST:/root/"
+  scp "$@" "$TMUX_SCRIPT" "$HOST:/root/install_tmux.sh" \
+    || die "Failed to upload install_tmux.sh."
+  scp "$@" "$TMUX_CONF" "$HOST:/root/tmux.conf" \
+    || die "Failed to upload tmux.conf."
+  log "install_tmux.sh + tmux.conf uploaded."
+else
+  warn "install_tmux.sh / tmux.conf not found next to this script - skipping."
 fi
 
 # --- summary -------------------------------------------------------------------

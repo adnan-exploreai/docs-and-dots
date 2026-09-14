@@ -11,10 +11,11 @@ set -euo pipefail
 #   4. Shell setup            (zsh default, Starship + Catppuccin, zsh plugins)
 #   5. AI tooling             (herdr, opencode)
 #   6. Containers             (Docker Engine + Compose plugin, official repo)
-#   7. Dev toolchains         (rustup, Python + uv, Neovim+NvChad, Node.js 20 LTS)
+#   7. Dev toolchains         (rustup, Python + uv, Neovim+NvChad, Node.js latest LTS)
 #   8. Monitoring             (btop, ncdu, unattended-upgrades)
-#   9. Security               (ufw firewall, fail2ban)
+#   9. Security               (ufw firewall)
 #  10. Misc CLI               (yq, sqlite3)
+#  11. tmux                   (config + TPM plugins, Catppuccin)
 #
 # Usage:
 #   ./setup_debian.sh           interactive - confirms each section
@@ -59,9 +60,9 @@ run_as_user() {
 }
 
 # Download the latest release binary of a GitHub project to /usr/local/bin.
-#   install_github_release <owner/repo> <asset grep pattern> <binary name>
+#   install_github_release <owner/repo> <asset grep pattern> <binary name> [<archive-internal name>]
 install_github_release() {
-  local repo="$1" pattern="$2" name="$3"
+  local repo="$1" pattern="$2" name="$3" src_bin="${4:-$3}"
   local url tmp bin
   log "Installing $name from GitHub releases..."
   url="$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" \
@@ -70,11 +71,22 @@ install_github_release() {
   tmp="$(mktemp -d)"
   curl -fsSL "$url" -o "$tmp/$name.tar.gz"
   tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
-  bin="$(find "$tmp" -maxdepth 3 -type f -name "$name" | head -n1)"
-  [ -n "$bin" ] || die "Binary '$name' not found inside the release archive"
+  bin="$(find "$tmp" -maxdepth 3 -type f -name "$src_bin" | head -n1)"
+  [ -n "$bin" ] || die "Binary '$src_bin' not found inside the release archive"
   install -m 0755 "$bin" "/usr/local/bin/$name"
   rm -rf "$tmp"
   log "$name installed."
+}
+
+# pi needs Node.js >= 22.19.0. Returns 0 if the installed node satisfies it.
+node_version_ok() {
+  command -v node >/dev/null 2>&1 || return 1
+  local v major minor patch
+  v="$(node --version 2>/dev/null)"; v="${v#v}"
+  IFS=. read -r major minor patch <<< "$v"
+  [ "${major:-0}" -gt 22 ] && return 0
+  [ "${major:-0}" -eq 22 ] && [ "${minor:-0}" -ge 19 ] && return 0
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -288,7 +300,7 @@ fi
 # ---------------------------------------------------------------------------
 # 5. AI tooling
 # ---------------------------------------------------------------------------
-if confirm "AI tooling (herdr - agent terminal runtime, opencode - AI coding agent)"; then
+if confirm "AI tooling (herdr - agent terminal runtime, opencode - AI coding agent, pi - coding harness)"; then
   info "Installing herdr (https://herdr.dev)..."
   run_as_user 'curl -fsSL https://herdr.dev/install.sh | sh'
   log "herdr installed."
@@ -296,6 +308,15 @@ if confirm "AI tooling (herdr - agent terminal runtime, opencode - AI coding age
   info "Installing opencode (https://opencode.ai)..."
   run_as_user 'curl -LsSf https://opencode.ai/install | bash'
   log "opencode installed."
+
+  # pi needs Node.js >= 22.19.0, which the dedicated installer handles
+  if [ -f "$(dirname "$0")/install_pi.sh" ]; then
+    TARGET_USER="$USER_NAME" "$(dirname "$0")/install_pi.sh" --yes
+  else
+    warn "install_pi.sh not found next to this script - running the official pi installer directly."
+    run_as_user 'curl -fsSL https://pi.dev/install.sh | sh'
+  fi
+  log "pi installed."
 fi
 
 # ---------------------------------------------------------------------------
@@ -323,7 +344,7 @@ fi
 # ---------------------------------------------------------------------------
 # 7. Dev toolchains: rustup, Python + uv, neovim, Node.js LTS
 # ---------------------------------------------------------------------------
-if confirm "Dev toolchains (rustup, Python + uv, neovim, Node.js 20 LTS + npm)"; then
+if confirm "Dev toolchains (rustup, Python + uv, neovim, Node.js latest LTS + npm)"; then
   # Rust toolchain (user-level, installs to ~/.cargo)
   if ! command -v cargo >/dev/null 2>&1; then
     info "Installing Rust via rustup..."
@@ -345,10 +366,11 @@ if confirm "Dev toolchains (rustup, Python + uv, neovim, Node.js 20 LTS + npm)";
     DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y neovim
   fi
 
-  # Node.js 20 LTS + npm from NodeSource
-  if ! command -v node >/dev/null 2>&1; then
-    info "Adding NodeSource repo and installing Node.js 20 LTS..."
-    curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO bash -
+  # Node.js latest LTS + npm from NodeSource (pi requires >= 22.19.0).
+  # NodeSource's setup_lts.x alias tracks the current LTS major version.
+  if ! node_version_ok || ! command -v npm >/dev/null 2>&1; then
+    info "Adding NodeSource repo and installing the latest Node.js LTS..."
+    curl -fsSL https://deb.nodesource.com/setup_lts.x | $SUDO bash -
     DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y nodejs
   fi
   log "Dev toolchains installed."
@@ -375,10 +397,10 @@ if confirm "Monitoring + auto-updates (btop, ncdu, unattended-upgrades)"; then
 fi
 
 # ---------------------------------------------------------------------------
-# 9. Security: ufw firewall + fail2ban
+# 9. Security: ufw firewall
 # ---------------------------------------------------------------------------
-if confirm "Security (ufw firewall + fail2ban brute-force protection)"; then
-  DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y ufw fail2ban
+if confirm "Security (ufw firewall)"; then
+  DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y ufw
 
   # allow SSH BEFORE enabling the firewall so we never lock ourselves out
   $SUDO ufw default deny incoming
@@ -386,9 +408,6 @@ if confirm "Security (ufw firewall + fail2ban brute-force protection)"; then
   $SUDO ufw allow OpenSSH
   $SUDO ufw --force enable
   log "ufw enabled (SSH allowed, everything else denied)."
-
-  $SUDO systemctl enable --now fail2ban
-  log "fail2ban enabled."
 fi
 
 # ---------------------------------------------------------------------------
@@ -397,9 +416,20 @@ fi
 if confirm "Misc CLI (yq for YAML, sqlite3)"; then
   DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y sqlite3
   if ! command -v yq >/dev/null 2>&1; then
-    install_github_release "mikefarah/yq" "yq_linux_amd64\.tar\.gz" "yq"
+    install_github_release "mikefarah/yq" "yq_linux_amd64\.tar\.gz" "yq" "yq_linux_amd64"
   fi
   log "yq and sqlite3 installed."
+fi
+
+# ---------------------------------------------------------------------------
+# 11. tmux config + TPM plugins (Catppuccin)
+# ---------------------------------------------------------------------------
+if confirm "tmux setup (config + TPM plugins: tmux-sensible, catppuccin/tmux)"; then
+  if [ -f "$(dirname "$0")/install_tmux.sh" ] && [ -f "$(dirname "$0")/tmux.conf" ]; then
+    TARGET_USER="$USER_NAME" "$(dirname "$0")/install_tmux.sh" --yes
+  else
+    warn "install_tmux.sh / tmux.conf not found next to this script - tmux is already installed but not configured."
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -413,6 +443,7 @@ echo "  - Open a new shell (or: exec zsh) to load zsh + Starship."
 echo "  - Run 'starship preset --help' if you want a different Catppuccin flavour (latte/frappe/macchiato)."
 echo "  - herdr:   run 'herdr' to start the agent terminal runtime (ctrl+b q detaches, 'herdr' reattaches)."
 echo "  - opencode: run 'opencode' to start the AI coding agent."
+echo "  - pi:       run 'pi' to start the coding harness, then '/login' to authenticate."
 echo "  - eza/duf/bat/zoxide/fzf are wired up via aliases and init hooks in ~/.zshrc."
 echo "  - Docker: 'docker compose version' to verify; log out/in for the docker group to apply."
 echo "  - Toolchains: 'node -v', 'cargo --version', 'uv --version' to verify (cargo needs a new shell)."
